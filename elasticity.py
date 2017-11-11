@@ -6,11 +6,13 @@ import sympy as sym
 
 class StressTensor():
     
-    def __init__(self, point, expression=None):
+    def __init__(self, symbols=None, expression=None):
         if expression:
             self.evaluate = expression
 
-        self.tensor, self.isSymbol = self.get_tensor(point)
+        if symbols:
+            self.symbols = symbols # x, y, z
+            self.tensor, self.isSymbol = self.get_tensor(symbols)
         
     
     @staticmethod   
@@ -41,7 +43,7 @@ class StressTensor():
         λs, vs = np.linalg.eig(σ) # get eigenvalues and eigenvectors
         vs = vs[np.argsort(λs)[::-1]] # sort eigenvectors
         λs = np.sort(λs)[::-1] # sort eigenvalues
-        return λs, vs 
+        return λs, vs.T
         
         
         
@@ -52,6 +54,9 @@ class StressTensor():
     
 
     def strain_tensor(self, E, ν, point=None):
+        '''
+        Returns a StrainTensor object
+        '''
         σ, _ = self.get_tensor(point)
         
         σx = σ[0, 0]; σy = σ[1, 1]; σz = σ[2, 2]
@@ -64,10 +69,26 @@ class StressTensor():
 
         εxy = (1 + ν)*τxy/E; εxz = (1 + ν)*τxz/E; εyz = (1 + ν)*τyz/E
         
-        ε = np.array([[εx, εxy, εxz],
-                      [εxy, εy, εyz],
-                      [εxz, εyz, εz]])
-        
+        ε = StrainTensor(self.symbols)
+        ε.tensor = np.array([[εx, εxy, εxz],
+                  [εxy, εy, εyz],
+                  [εxz, εyz, εz]])
+
+        def gen_ε(self, point):
+            ε_sym = self.tensor
+            x, y, z = self.symbols
+
+            ε = np.zeros([9]).astype('object')
+            for i, εi in enumerate(ε_sym.reshape([-1])):
+                εi_lamb = sym.lambdify([x, y, z], εi)
+                ε[i] = σi_lamb(*point)
+
+            ε = ε.reshape([3, 3])
+            return ε
+
+        from functools import partial
+        ε.evaluate = partial(gen_ε, ε)
+
         return ε
     
     
@@ -145,11 +166,11 @@ class StressTensor():
         return fig
 
 
-    def body_forces(self, point):
-        σ, isSymbol = self.get_tensor(point)
+    def body_forces(self):
+        σ, isSymbol = self.get_tensor()
         assert isSymbol, "Tensor must be symbolic"
 
-        x, y, z = point
+        x, y, z = self.symbols
         σx = σ[0, 0]; σy = σ[1, 1]; σz = σ[2, 2]
         τxy = σ[0, 1]; τxz = σ[0, 2]; τyz = σ[1, 2]
 
@@ -165,7 +186,7 @@ class StressTensor():
         return X, Y, Z
 
 
-    def plot_superficial_forces(self, pA, pB, η, symbols):
+    def plot_superficial_forces_2D(self, pA, pB, η):
         
         vBA = pB - pA
 
@@ -173,11 +194,11 @@ class StressTensor():
             if vBA[i] != 0:
                 m = vBA/vBA[i] # slopes
                 b = pB - m*pB[i] # bias
-                t = symbols[i] # variable
+                t = self.symbols[i] # variable
                 T = self.stress_vector(η, m*t + b) # stress vector as a function of t
                 break
 
-        i = symbols.index(t)
+        i = self.symbols.index(t)
 
         t_vals = np.sort(np.linspace(pA[i], pB[i], 100))
         T_vals = np.zeros([3, 100])
@@ -188,117 +209,12 @@ class StressTensor():
             if T_vals[j].argmax() != T_vals[j].argmin():
                 plt.plot(t_vals, T_vals[j])
                 plt.xlabel(str(t))
-                plt.ylabel('T'+str(symbols[j]))
+                plt.ylabel('T'+str(self.symbols[j]))
                 plt.grid()
                 plt.show()
                 print('{} to {}'.format(T_vals[j, 0], T_vals[j, -1]))
 
         return T
-
-
-    # def resultant_superficial_forces(self, pA, pB, η, symbols):
-        
-    #     vBA = pB - pA
-
-    #     for i in range(len(vBA)):
-    #         if vBA[i] != 0:
-    #             m = vBA/vBA[i] # slopes
-    #             b = pB - m*pB[i] # bias
-    #             t = symbols[i] # variable
-    #             T = self.stress_vector(η, m*t + b) # stress vector as a function of t
-    #             break
-
-    #     i = symbols.index(t) # index of the variable
-
-    #     F = np.zeros([len(T), len(T)])
-    #     Ct = np.zeros([len(T), len(T)])
-
-    #     for j in range(len(T)):
-    #         F[j, j] = sym.integrate(T[j], (t, pA[i], pB[i])) # Resultant superficial force [N/m²]
-    #         if F[j, j] != 0:
-    #             ct = sym.integrate(t*T[j], (t, pA[i], pB[i]))/F[j, j] # Centroid in the t component
-    #             Ct[j] = m*ct + b # Cetroid in all components
-
-    #     return F, Ct, t
-
-
-    def length_increment(self, E, ν, pA, pB, symbols):
-        '''
-        For a rect segment pA-pB.
-        '''
-        σ, isSymbol = self.get_tensor(symbols)
-        assert isSymbol, "Tensor must be symbolic"
-        x, y, z = symbols
-
-        # Line integral, as in https://www.youtube.com/watch?v=uXjQ8yc9Pdg
-        # ∫f(x(t),y(t),z(t))*(dS/dt)*dt, from 0 to l
-
-        vBA = pB - pA
-        l = np.linalg.norm(vBA)
-        η = vBA/l
-
-        # εn = f(x, y, z)
-        ε = self.strain_tensor(E, ν)
-        εn = η.dot(ε.dot(η))    
-        
-        # Parametrization: describing x, y and z as functions of t
-        mx = vBA[0]/l; my = vBA[1]/l; mz = vBA[2]/l
-        bx = pA[0]; by = pA[1]; bz=pA[2]
-
-        t = sym.Symbol('t', real=True)
-
-        x_t = mx*t + bx
-        y_t = my*t + by
-        z_t = mz*t + bz
-
-        # dS
-        dxdt = sym.diff(x_t, t)
-        dydt = sym.diff(y_t, t)
-        dzdt = sym.diff(z_t, t)
-
-        dSdt = sym.sqrt(dxdt**2 + dydt**2 + dzdt**2)
-
-        εn_lambd = sym.lambdify([x, y, z], εn, modules='sympy')
-        εn_t = εn_lambd(x_t, y_t, z_t)
-
-        # Line integral
-        Δl = sym.integrate(εn_t*dSdt, (t, 0, l))
-
-        return float(Δl)
-
-
-    # def area_increment(self, E, ν, η, pA, pB, point):
-
-    #     # General equation of a plane:
-    #     # a*x + b*y + c*z + d = 0
-    #     d = -(η[0]*pA[0] + η[1]*pA[1] + η[2]*pA[2])
-
-    #     # creo que si
-    #     if η[0] != 0:
-    #         ε = σ.strain_tensor(E, ν, (-y*η[1]/η[0] + -z*η[2]/η[0] - d/η[0], y, z))
-    #         η1 = np.array([0, 1, 0])
-    #         η2 = np.array([0, 0, 1])
-    #         t1 = y; t2 = z          
-    #     elif η[1] != 0:
-    #         ε = σ.strain_tensor(E, ν, (x, -x*η[0]/η[1] + -z*η[2]/η[1] - d/η[1], z))
-    #         η1 = np.array([1, 0, 0])
-    #         η2 = np.array([0, 0, 1])
-    #         t1 = x; t2 = z
-    #     elif η[2] != 0:
-    #         ε = σ.strain_tensor(E, ν, (x, y, -x*η[0]/η[2] + -y*η[1]/η[2] - d/η[2]))
-    #         η1 = np.array([1, 0, 0])
-    #         η2 = np.array([0, 1, 0])
-    #         t1 = x; t2 = y
-
-    #     εnt1 = η.dot(ε.dot(η))
-    #     εnt2 = η.dot(ε.dot(η))
-
-    #     # ya tenemos el campo vectorial (εnt1 + εnt2)
-    #     # me faltan los límites de la integral
-    #     # eso me lo dan los puntos...
-
-    #     sym.integrate(sym.integrate((εnt1 + εnt2), (t2, 0, -2*y+2)), (t1, 0, 1))
-
 
 
 
@@ -349,7 +265,7 @@ class Polygon():
         areas = np.zeros(len(self.faces))
 
         for i, face in enumerate(self.faces):
-            if len(face) == 3:
+            if len(face) == 3: # triangle
                 
                 A, B, C = face
 
@@ -360,7 +276,7 @@ class Polygon():
 
                 areas[i] = np.linalg.norm(vBA)*np.linalg.norm(vCA)*np.sin(γ)/2
 
-            elif len(face) == 4:
+            elif len(face) == 4: # quadrilateral
                 # Area of quadrilateral using Bretschneider's formula
 
                 A, B, C, D = face
@@ -384,3 +300,206 @@ class Polygon():
                 print("Unable to calculate area for faces with more than 4 points.")
 
         return areas
+
+
+
+
+class DisplacementField():
+
+    def __init__(self, symbols, expression):
+        self.symbols = symbols
+        self.evaluate = expression
+        self.field = self.evaluate(symbols)
+
+
+    @staticmethod
+    def evaluate(point):
+        u = np.array([1,
+            1,
+            1])
+        return u
+
+
+    def strain_tensor(self):
+        '''
+        Returns a StrainTensor object
+        '''
+        u = self.field
+        x, y, z = self.symbols
+
+        εxx = sym.diff(u[0], x)
+        εyy = sym.diff(u[1], y)
+        εzz = sym.diff(u[2], z)
+
+        εxy = (sym.diff(u[1], x) + sym.diff(u[0], y))/2
+        εxz = (sym.diff(u[2], x) + sym.diff(u[0], z))/2
+        εyz = (sym.diff(u[2], y) + sym.diff(u[1], z))/2
+
+        ε = StrainTensor(self.symbols)
+        ε.tensor = np.array([[εxx, εxy, εxz],
+                  [εxy, εyy, εyz],
+                  [εxz, εyz, εzz]])
+
+        def gen_ε(self, point):
+            ε_sym = self.tensor
+            x, y, z = self.symbols
+
+            ε = np.zeros([9]).astype('object')
+            for i, εi in enumerate(ε_sym.reshape([-1])):
+                εi_lamb = sym.lambdify([x, y, z], εi)
+                ε[i] = σi_lamb(*point)
+
+            ε = ε.reshape([3, 3])
+            return ε
+
+        from functools import partial
+        ε.evaluate = partial(gen_ε, ε)
+
+        return ε
+
+
+
+
+class StrainTensor():
+
+    def __init__(self, symbols=None, expression=None):
+        if expression:
+            self.evaluate = expression
+
+        if symbols:
+            self.symbols = symbols # x, y, z
+            self.tensor, self.isSymbol = self.get_tensor(symbols)
+
+
+    @staticmethod
+    def evaluate(point):
+        ε = np.array([[1, 0, 0],
+                  [0, 1, 0],
+                  [0, 0, 1]])
+        return ε
+
+
+    def get_tensor(self, point=None):
+        if point is None:
+            ε = self.tensor
+            isSymbol = self.isSymbol
+        else:
+            ε = self.evaluate(point)
+            isSymbol = False
+            for c in point:
+                if hasattr(c, 'free_symbols'):
+                    isSymbol = True
+            if not isSymbol: ε = ε.astype(np.float32)
+
+        return ε, isSymbol
+
+
+    def stress_tensor(self, E, ν):
+        '''
+        Returns a StressTensor object
+        '''
+        ε, isSymbol = self.get_tensor()
+        assert isSymbol, "Tensor must be symbolic"
+
+        σ = StressTensor(self.symbols)
+
+        # Lamé equations
+        G = E/(2*(1 + ν))
+        λ = 2*G*ν/(1 - 2*ν)
+        σ.tensor = 2*G*ε + λ*np.trace(ε)*np.eye(3)
+
+        def gen_σ(self, point):
+            σ_sym = self.tensor
+            x, y, z = self.symbols
+
+            σ = np.zeros([9]).astype('object')
+            for i, σi in enumerate(σ_sym.reshape([-1])):
+                σi_lamb = sym.lambdify([x, y, z], σi)
+                σ[i] = σi_lamb(*point)
+
+            σ = σ.reshape([3, 3])
+            return σ
+
+        from functools import partial
+        σ.evaluate = partial(gen_σ, σ)
+
+        return σ
+
+
+    def length_increment(self, pA, pB):
+        '''
+        For a rect segment pA-pB.
+        '''
+        ε, isSymbol = self.get_tensor()
+        assert isSymbol, "Tensor must be symbolic"
+        x, y, z = self.symbols
+
+        # Line integral, as in https://www.youtube.com/watch?v=uXjQ8yc9Pdg
+        # ∫f(x(t),y(t),z(t))*|rt|*dt, from 0 to l
+
+        vBA = pB - pA
+        l = np.linalg.norm(vBA)
+        η = vBA/l
+
+        # εn = εn(x, y, z)
+        εn = η.dot(ε.dot(η))
+
+        # Parametrization: describing x, y and z as functions of t
+        t = sym.Symbol('t', real=True)
+
+        x_t = η[0]*t + pA[0]
+        y_t = η[1]*t + pA[1]
+        z_t = η[2]*t + pB[2]
+
+        # dS = |rt|*dt
+        dSdt = np.linalg.norm(η)
+
+        # Describing εn as a function of t
+        εn_lambda = sym.lambdify([x, y, z], εn, modules='sympy')
+        εn_t = εn_lambda(x_t, y_t, z_t)
+
+        # Line integral
+        Δl = sym.integrate(εn_t*dSdt, (t, 0, l))
+
+        return float(Δl)
+
+
+    def rect_area_increment(self, pA, pB, pC):
+        '''
+        For a rectangular area defined by sides AB and AC.
+        '''
+        ε, isSymbol = self.get_tensor()
+        assert isSymbol, "Tensor must be symbolic"
+        x, y, z = self.symbols
+
+        # Surface integral, as in https://www.youtube.com/watch?v=tyVCA_8MUV4
+        # ∫f(x(u,v),y(u,v),z(u,v))*|ru x rv|*dudv, 0<=u<=lu, 0<=v<=lv
+
+        vAB = pB - pA; vAC = pC - pA
+        lAB = np.linalg.norm(vAB); lAC = np.linalg.norm(vAC)
+        ηu = vAB/lAB; ηv = vAC/lAC
+
+        # εu = εu(x, y, z); εv = εv(x, y, z)
+        εu = ηu.dot(ε.dot(ηu))
+        εv = ηv.dot(ε.dot(ηv))
+
+        # Parametrization: describing x, y and z as functions of u and v
+        u, v = sym.symbols('u, v', real=True)
+
+        x_uv = ηu[0]*u + ηv[0]*v + pA[0]
+        y_uv = ηu[1]*u + ηv[1]*v + pA[1]
+        z_uv = ηu[2]*u + ηv[2]*v + pA[2]
+
+        # dS = |ru x rv|*dt
+        dSdt = np.linalg.norm(np.cross(ηu, ηv))
+
+        # Describing εu and εv as functions of u and v
+        εu_lambda = sym.lambdify([x, y, z], εu, modules='sympy')
+        εu_uv = εu_lambda(x_uv, y_uv, z_uv)
+        εv_lambda = sym.lambdify([x, y, z], εv, modules='sympy')
+        εv_uv = εv_lambda(x_uv, y_uv, z_uv)
+
+        # Surface integral
+        ΔA = sym.integrate((εu_uv + εv_uv)*dSdt, (u, 0, lAB), (v, 0, lAC))
+
+        return float(ΔA)
