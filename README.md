@@ -26,8 +26,8 @@ $ jupyter-notebook
 
 ## Ejemplo
 
-En la carpeta `examples` hay un ejemplo. Para correrlo en el ordenador:
+El archivo ProblemaResuelto.ipynb muestra cómo usar la librería. Para correrlo en tu equipo:
 
 ```
-$ jupyter-notebook examples/ProblemaResuelto.ipynb
+$ jupyter-notebook ProblemaResuelto.ipynb
 ```
